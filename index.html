@@ -313,6 +313,22 @@
         </div>
       </div>
 
+      <!-- Live caption preview -->
+      <div id="live-caption-box" style="display:none;margin-bottom:16px;background:var(--bg3);border:1px solid var(--border);border-radius:12px;padding:14px 16px;position:relative;overflow:hidden;">
+        <!-- Mic level meter -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <span style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;">Mic Level</span>
+          <div style="flex:1;height:6px;background:var(--bg);border-radius:99px;overflow:hidden;">
+            <div id="mic-level-bar" style="height:100%;width:0%;background:var(--green);border-radius:99px;transition:width 0.1s linear;"></div>
+          </div>
+        </div>
+        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px;">Live Caption</div>
+        <div id="live-caption-text" style="font-family:'DM Mono',monospace;font-size:13px;line-height:1.6;color:var(--text);min-height:20px;max-height:80px;overflow-y:auto;word-break:break-word;"></div>
+        <div id="no-speech-warning" style="display:none;margin-top:8px;padding:8px 12px;background:rgba(248,113,113,.1);border:1px solid rgba(248,113,113,.3);border-radius:8px;font-size:12px;color:var(--red);line-height:1.5;">
+          Mic isn't hearing speech. Make sure audio plays through <strong>speakers</strong> (not headphones) and the volume is turned up. Move the mic closer to the speaker if needed.
+        </div>
+      </div>
+
       <div style="display:flex;gap:12px;flex-wrap:wrap;">
         <button class="btn btn-primary" id="upload-transcribe-btn" onclick="transcribeFile()" disabled style="flex:1;justify-content:center;">
           ▶️ Play &amp; Transcribe
@@ -400,6 +416,10 @@ let fileRecognition = null;
 let fileAudio = null;
 let fileTranscribing = false;
 let micStream = null;        // held open to prevent repeated permission prompts
+let noSpeechCount = 0;       // track consecutive no-speech events
+let fileMicCtx = null;       // AudioContext for mic level during file transcription
+let fileMicAnalyser = null;
+let fileMicAnimFrame = null;
 
 // ── Visualizer ─────────────────────────────────────────────────────
 const viz = document.getElementById('visualizer');
@@ -558,10 +578,13 @@ function transcribeFile() {
 
   // Reset output
   rawText = ''; enhancedText = '';
+  noSpeechCount = 0;
   setTranscript('');
   document.getElementById('enhanced-transcript').textContent = '';
   document.getElementById('enhanced-transcript').style.display = 'none';
   document.getElementById('view-toggle').style.display = 'none';
+  document.getElementById('live-caption-text').textContent = '';
+  document.getElementById('no-speech-warning').style.display = 'none';
 
   fileAudio = document.getElementById('audio-player');
   fileAudio.currentTime = 0;
@@ -575,15 +598,27 @@ function transcribeFile() {
     let final = rawText;
 
     r.onresult = e => {
+      noSpeechCount = 0; // reset on any result
+      document.getElementById('no-speech-warning').style.display = 'none';
       let interim = '';
       for (let i = e.resultIndex; i < e.results.length; i++) {
         if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
         else interim = e.results[i][0].transcript;
       }
       rawText = final;
-      setTranscript(final + (interim ? ` [${interim}]` : ''));
+      const displayText = final + (interim ? ` [${interim}]` : '');
+      setTranscript(displayText);
       updateStats(final);
       document.getElementById('stats-row').style.display = 'flex';
+
+      // Update live caption preview
+      const captionEl = document.getElementById('live-caption-text');
+      const lastChunk = (interim || final.trim().split(/\s+/).slice(-20).join(' '));
+      captionEl.textContent = lastChunk;
+      captionEl.scrollTop = captionEl.scrollHeight;
+
+      // Auto-scroll transcript into view
+      document.getElementById('raw-transcript').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     };
 
     r.onerror = e => {
@@ -591,9 +626,11 @@ function transcribeFile() {
         fileTranscribing = false;
         if (fileAudio) fileAudio.pause();
         document.getElementById('progress-block').style.display = 'none';
+        document.getElementById('live-caption-box').style.display = 'none';
         document.getElementById('upload-transcribe-btn').disabled = false;
         document.getElementById('stop-file-btn').style.display = 'none';
         stopTimer();
+        stopFileMicLevel();
         setStatus('', 'Ready');
         const s = document.getElementById('mic-status');
         s.style.display = 'block';
@@ -602,7 +639,12 @@ function transcribeFile() {
         s.textContent = '❌ Mic permission was revoked. Please click "Grant Mic" again.';
         showToast('❌', 'Mic access lost. Re-grant and retry.');
       }
-      // 'no-speech' is normal silence — SR handles it internally
+      if (e.error === 'no-speech') {
+        noSpeechCount++;
+        if (noSpeechCount >= 3 && !rawText.trim()) {
+          document.getElementById('no-speech-warning').style.display = 'block';
+        }
+      }
     };
 
     r.onend = () => {
@@ -653,9 +695,11 @@ function transcribeFile() {
     fileAudio.play().then(() => {
       setStatus('processing', 'Playing audio — mic is listening...');
       document.getElementById('progress-block').style.display = 'block';
+      document.getElementById('live-caption-box').style.display = 'block';
       document.getElementById('upload-transcribe-btn').disabled = true;
       document.getElementById('stop-file-btn').style.display = 'inline-flex';
       startTimer();
+      startFileMicLevel();
     }).catch(err => {
       showToast('❌', 'Could not play audio: ' + err.message);
       stopFileTranscription();
@@ -669,10 +713,41 @@ function fmtTime(s) {
   return m + ':' + String(sec).padStart(2,'0');
 }
 
+function startFileMicLevel() {
+  if (!micStream) return;
+  try {
+    fileMicCtx = new (window.AudioContext || window.webkitAudioContext)();
+    fileMicAnalyser = fileMicCtx.createAnalyser();
+    fileMicAnalyser.fftSize = 256;
+    fileMicCtx.createMediaStreamSource(micStream).connect(fileMicAnalyser);
+    const buf = new Uint8Array(fileMicAnalyser.frequencyBinCount);
+    const bar = document.getElementById('mic-level-bar');
+    (function tick() {
+      fileMicAnimFrame = requestAnimationFrame(tick);
+      fileMicAnalyser.getByteFrequencyData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) sum += buf[i];
+      const avg = sum / buf.length;
+      const pct = Math.min(100, (avg / 128) * 100);
+      bar.style.width = pct.toFixed(1) + '%';
+      bar.style.background = pct > 15 ? 'var(--green)' : pct > 5 ? 'var(--accent)' : 'var(--red)';
+    })();
+  } catch(e) {}
+}
+
+function stopFileMicLevel() {
+  if (fileMicAnimFrame) cancelAnimationFrame(fileMicAnimFrame);
+  if (fileMicCtx) { fileMicCtx.close(); fileMicCtx = null; }
+  fileMicAnalyser = null;
+  const bar = document.getElementById('mic-level-bar');
+  if (bar) bar.style.width = '0%';
+}
+
 function stopFileTranscription() {
   fileTranscribing = false;
   if (fileAudio) { fileAudio.pause(); fileAudio.ontimeupdate = null; }
   if (fileRecognition) { try { fileRecognition.stop(); } catch(e){} fileRecognition = null; }
+  stopFileMicLevel();
   // Keep micStream alive so user doesn't have to re-grant for the next transcription
   finishFileTranscription();
 }
@@ -681,6 +756,8 @@ function finishFileTranscription() {
   fileTranscribing = false;
   // Keep micStream alive so user doesn't have to re-grant for the next transcription
   stopTimer();
+  stopFileMicLevel();
+  document.getElementById('live-caption-box').style.display = 'none';
   // Fill bar to 100% if audio finished naturally
   if (fileAudio && fileAudio.ended) {
     document.getElementById('progress-fill').style.width = '100%';
