@@ -215,7 +215,7 @@
       <div class="info-box" style="margin-bottom:16px;">
         <span class="info-icon">🤖</span>
         <div>
-          <strong>AI-powered transcription.</strong> Upload your audio file and Whisper AI will transcribe it directly — no microphone needed. The AI model downloads once (~50 MB) and is cached in your browser.
+          <strong>AI-powered transcription.</strong> Upload your audio file and Whisper AI will transcribe it directly — no microphone needed. The AI model downloads once (~80 MB) and is cached in your browser.
         </div>
       </div>
 
@@ -506,12 +506,31 @@ function removeFile() {
 async function loadWhisperModel(onProgress) {
   if (whisperPipeline) return whisperPipeline;
   const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
-  whisperPipeline = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-tiny', {
+  whisperPipeline = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-base', {
     dtype: 'q8',
     device: 'wasm',
     progress_callback: onProgress
   });
   return whisperPipeline;
+}
+
+// Detect hallucinated text: repetitive phrases are a sign of Whisper hallucination
+function isHallucinated(text) {
+  if (!text || text.length < 20) return false;
+  // Check compression ratio — highly repetitive text compresses well
+  const words = text.trim().split(/\s+/);
+  if (words.length < 4) return false;
+  // Count unique 3-grams vs total 3-grams
+  const ngrams = new Set();
+  let total = 0;
+  for (let i = 0; i < words.length - 2; i++) {
+    ngrams.add(words[i] + ' ' + words[i+1] + ' ' + words[i+2]);
+    total++;
+  }
+  if (total === 0) return false;
+  const uniqueRatio = ngrams.size / total;
+  // If less than 20% of 3-grams are unique, it's repetitive hallucination
+  return uniqueRatio < 0.2;
 }
 
 async function transcribeFile() {
@@ -599,7 +618,8 @@ async function transcribeFile() {
       stride_length_s: 5,
       language: langCode,
       task: 'transcribe',
-      return_timestamps: true
+      return_timestamps: true,
+      no_repeat_ngram_size: 3
     });
 
     clearInterval(progressInterval);
@@ -607,11 +627,15 @@ async function transcribeFile() {
 
     if (!fileTranscribing) return;
 
-    // Extract text from result
+    // Extract text from result, filtering out hallucinated chunks
     if (result.chunks && result.chunks.length > 0) {
-      rawText = result.chunks.map(c => c.text.trim()).filter(Boolean).join(' ');
+      rawText = result.chunks
+        .map(c => c.text.trim())
+        .filter(t => t && !isHallucinated(t))
+        .join(' ');
     } else {
       rawText = (result.text || '').trim();
+      if (isHallucinated(rawText)) rawText = '';
     }
 
     // Update UI with final result
