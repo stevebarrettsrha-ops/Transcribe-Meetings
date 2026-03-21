@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VoiceScript — AI Transcription</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0c0e14;
+    --bg2: #12151f;
+    --bg3: #1a1e2e;
+    --surface: #1e2235;
+    --border: #2a2f45;
+    --text: #e8eaf4;
+    --muted: #6b7094;
+    --accent: #f5a623;
+    --accent2: #e07b00;
+    --green: #4ade80;
+    --red: #f87171;
+    --blue: #60a5fa;
+    --purple: #a78bfa;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: 'DM Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; overflow-x: hidden; }
+  body::before { content: ''; position: fixed; inset: 0; background-image: linear-gradient(rgba(245,166,35,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(245,166,35,0.03) 1px, transparent 1px); background-size: 40px 40px; pointer-events: none; z-index: 0; }
+  .container { max-width: 900px; margin: 0 auto; padding: 32px 20px 60px; position: relative; z-index: 1; }
+
+  header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 48px; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 36px; height: 36px; background: var(--accent); border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+  .logo-text { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 20px; letter-spacing: -0.5px; }
+  .logo-text span { color: var(--accent); }
+  .badge { background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 5px 14px; font-size: 12px; color: var(--muted); font-family: 'DM Mono', monospace; }
+
+  .hero { text-align: center; margin-bottom: 40px; }
+  .hero h1 { font-family: 'Syne', sans-serif; font-weight: 800; font-size: clamp(32px, 5vw, 52px); line-height: 1.1; letter-spacing: -2px; margin-bottom: 12px; }
+  .hero h1 .highlight { color: var(--accent); }
+  .hero p { color: var(--muted); font-size: 16px; max-width: 440px; margin: 0 auto; line-height: 1.6; }
+
+  .recorder-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; padding: 32px; margin-bottom: 24px; }
+
+  .tabs { display: flex; gap: 4px; background: var(--bg3); border-radius: 12px; padding: 4px; margin-bottom: 28px; }
+  .tab { flex: 1; padding: 8px 10px; border: none; background: transparent; color: var(--muted); font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500; border-radius: 9px; cursor: pointer; transition: all 0.2s; }
+  .tab.active { background: var(--surface); color: var(--text); box-shadow: 0 2px 8px rgba(0,0,0,0.3); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .visualizer { width: 100%; height: 80px; background: var(--bg3); border-radius: 12px; margin-bottom: 24px; display: flex; align-items: center; justify-content: center; overflow: hidden; gap: 3px; padding: 0 16px; }
+  .bar { width: 3px; background: var(--border); border-radius: 2px; height: 6px; transition: height 0.08s ease; flex-shrink: 0; }
+  .bar.active { background: var(--accent); }
+
+  .status-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 24px; }
+  .status-indicator { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); font-family: 'DM Mono', monospace; }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: all 0.3s; }
+  .status-dot.recording { background: var(--red); animation: blink 1s ease infinite; }
+  .status-dot.processing { background: var(--accent); animation: glow 1.5s ease infinite; }
+  .status-dot.done { background: var(--green); }
+  @keyframes blink { 0%,100%{opacity:1;transform:scale(1);}50%{opacity:.4;transform:scale(.8);} }
+  @keyframes glow { 0%,100%{box-shadow:0 0 4px var(--accent);}50%{box-shadow:0 0 12px var(--accent);} }
+  .timer { font-family: 'DM Mono', monospace; font-size: 13px; color: var(--muted); }
+
+  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+  .btn-record { width: 56px; height: 56px; border-radius: 50%; border: none; background: var(--red); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 22px; transition: all 0.2s; flex-shrink: 0; }
+  .btn-record:hover { transform: scale(1.05); }
+  .btn-record.recording { animation: rec-pulse 1.5s ease infinite; }
+  @keyframes rec-pulse { 0%{box-shadow:0 0 0 0 rgba(248,113,113,.5);}70%{box-shadow:0 0 0 12px rgba(248,113,113,0);}100%{box-shadow:0 0 0 0 rgba(248,113,113,0);} }
+
+  .btn { padding: 12px 20px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface); color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; gap: 8px; }
+  .btn:hover:not(:disabled) { background: var(--bg3); border-color: var(--muted); }
+  .btn:disabled { opacity: .4; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: #0c0e14; border-color: var(--accent); font-weight: 600; }
+  .btn-primary:hover:not(:disabled) { background: var(--accent2); border-color: var(--accent2); }
+  .btn-sm { padding: 7px 14px; font-size: 12px; border-radius: 8px; }
+
+  .options-row { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .select-wrap { flex: 1; min-width: 140px; }
+  .select-wrap label { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-bottom: 6px; font-weight: 600; }
+  select { width: 100%; padding: 9px 32px 9px 12px; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 13px; cursor: pointer; outline: none; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' fill='%236b7094' viewBox='0 0 16 16'%3E%3Cpath d='M7.247 11.14L2.451 5.658C1.885 5.013 2.345 4 3.204 4h9.592a1 1 0 0 1 .753 1.659l-4.796 5.48a1 1 0 0 1-1.506 0z'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; }
+  select:focus { border-color: var(--accent); }
+
+  /* Upload */
+  .upload-zone { border: 2px dashed var(--border); border-radius: 16px; padding: 40px 24px; text-align: center; cursor: pointer; transition: all .3s; margin-bottom: 16px; }
+  .upload-zone:hover,.upload-zone.dragover { border-color: var(--accent); background: rgba(245,166,35,.04); }
+  .upload-icon { font-size: 36px; margin-bottom: 10px; }
+  .upload-zone h3 { font-family: 'Syne', sans-serif; font-size: 17px; font-weight: 700; margin-bottom: 6px; }
+  .upload-zone p { color: var(--muted); font-size: 13px; }
+  .upload-zone input { display: none; }
+  .file-info { background: var(--bg3); border-radius: 12px; padding: 14px 18px; display: none; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; }
+  .file-info.visible { display: flex; }
+  .file-name { font-family: 'DM Mono', monospace; font-size: 13px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+  #audio-player-wrap { display: none; margin-bottom: 16px; }
+  #audio-player-wrap.visible { display: block; }
+  audio { width: 100%; border-radius: 10px; }
+
+  /* Info/alert boxes */
+  .info-box { background: rgba(96,165,250,.08); border: 1px solid rgba(96,165,250,.25); border-radius: 12px; padding: 14px 16px; margin-bottom: 20px; font-size: 13px; color: #93c5fd; line-height: 1.6; display: flex; gap: 10px; align-items: flex-start; }
+  .info-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+
+  /* Paste */
+  .paste-area { width: 100%; min-height: 120px; background: var(--bg3); border: 1px solid var(--border); border-radius: 12px; padding: 14px; color: var(--text); font-family: 'DM Mono', monospace; font-size: 13px; line-height: 1.7; resize: vertical; outline: none; margin-bottom: 16px; }
+  .paste-area:focus { border-color: var(--accent); }
+  .paste-area::placeholder { color: var(--muted); }
+
+  /* Listening pulse */
+  .listening-pulse { display: none; align-items: center; gap: 10px; background: rgba(245,166,35,.08); border: 1px solid rgba(245,166,35,.3); border-radius: 12px; padding: 12px 16px; margin-bottom: 16px; font-size: 13px; color: var(--accent); }
+  .listening-pulse.visible { display: flex; }
+  .pulse-dots { display: flex; gap: 4px; }
+  .pulse-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pd 1.2s ease infinite; }
+  .pulse-dot:nth-child(2){animation-delay:.2s;} .pulse-dot:nth-child(3){animation-delay:.4s;}
+  @keyframes pd{0%,100%{transform:scale(.7);opacity:.4;}50%{transform:scale(1);opacity:1;}}
+
+  .loading-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; margin-top: 12px; display: none; }
+  .loading-bar.active { display: block; }
+  .loading-bar-inner { height: 100%; background: linear-gradient(90deg, var(--accent), var(--purple)); border-radius: 2px; animation: lb 1.5s ease infinite; width: 40%; }
+  @keyframes lb{0%{transform:translateX(-100%);}100%{transform:translateX(350%);}}
+
+  /* Enhance */
+  .enhance-card { background: linear-gradient(135deg, rgba(245,166,35,.08), rgba(167,139,250,.08)); border: 1px solid rgba(245,166,35,.25); border-radius: 20px; padding: 24px; margin-bottom: 24px; display: none; }
+  .enhance-card h3 { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 15px; margin-bottom: 8px; }
+  .enhance-card p { color: var(--muted); font-size: 13px; margin-bottom: 16px; line-height: 1.6; }
+  .enhance-options { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+  .chip { padding: 6px 14px; border-radius: 20px; border: 1px solid var(--border); background: var(--surface); color: var(--muted); font-size: 12px; cursor: pointer; transition: all .2s; font-weight: 500; user-select: none; }
+  .chip.selected { border-color: var(--accent); background: rgba(245,166,35,.1); color: var(--accent); }
+
+  /* Transcript */
+  .transcript-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 20px; overflow: hidden; margin-bottom: 24px; }
+  .transcript-header { padding: 18px 24px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+  .transcript-header h2 { font-family: 'Syne', sans-serif; font-weight: 700; font-size: 15px; letter-spacing: -.3px; }
+  .transcript-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .transcript-body { padding: 24px; min-height: 180px; position: relative; }
+  #raw-transcript { font-family: 'DM Mono', monospace; font-size: 14px; line-height: 1.8; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+  #enhanced-transcript { font-family: 'DM Sans', sans-serif; font-size: 15px; line-height: 1.8; color: var(--text); white-space: pre-wrap; word-break: break-word; display: none; }
+  .empty-state { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); }
+  .empty-state .icon { font-size: 32px; opacity: .4; }
+  .empty-state p { font-size: 14px; }
+  .transcript-toggle { display: flex; gap: 4px; background: var(--bg3); border-radius: 8px; padding: 3px; }
+  .toggle-btn { padding: 5px 12px; border-radius: 6px; border: none; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; font-family: 'DM Sans', sans-serif; transition: all .2s; }
+  .toggle-btn.active { background: var(--surface); color: var(--text); }
+
+  .stats-row { display: none; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+  .stat-item { background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 16px 20px; flex: 1; min-width: 100px; text-align: center; }
+  .stat-value { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 24px; color: var(--accent); letter-spacing: -1px; }
+  .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-top: 2px; }
+
+  .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 20px; font-size: 14px; display: flex; align-items: center; gap: 10px; transform: translateY(100px); opacity: 0; transition: all .3s; z-index: 100; max-width: 340px; }
+  .toast.show { transform: translateY(0); opacity: 1; }
+</style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🎙</div>
+      <span class="logo-text">Voice<span>Script</span></span>
+    </div>
+    <div class="badge">Powered by Claude AI</div>
+  </header>
+
+  <div class="hero">
+    <h1>Transcribe anything<br>with <span class="highlight">AI precision</span></h1>
+    <p>Record live, play back an audio file, or paste raw text — Claude cleans it up instantly.</p>
+  </div>
+
+  <div class="recorder-card">
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('record')">🎙 Record Live</button>
+      <button class="tab" onclick="switchTab('upload')">📁 Upload Audio</button>
+      <button class="tab" onclick="switchTab('paste')">📋 Paste Text</button>
+    </div>
+
+    <!-- RECORD TAB -->
+    <div class="tab-panel active" id="tab-record">
+      <div class="options-row">
+        <div class="select-wrap">
+          <label>Language</label>
+          <select id="lang-select">
+            <option value="en-US">English (US)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="es-ES">Spanish</option>
+            <option value="fr-FR">French</option>
+            <option value="de-DE">German</option>
+            <option value="pt-BR">Portuguese (BR)</option>
+            <option value="ja-JP">Japanese</option>
+            <option value="zh-CN">Chinese</option>
+          </select>
+        </div>
+        <div class="select-wrap">
+          <label>Mode</label>
+          <select id="mode-select">
+            <option value="continuous">Continuous</option>
+            <option value="single">Single phrase</option>
+          </select>
+        </div>
+      </div>
+      <div class="visualizer" id="visualizer"></div>
+      <div class="status-row">
+        <div class="status-indicator">
+          <div class="status-dot" id="status-dot"></div>
+          <span id="status-text">Ready to record</span>
+        </div>
+        <div class="timer" id="timer">00:00</div>
+      </div>
+      <div class="controls">
+        <button class="btn-record" id="record-btn" onclick="toggleRecording()">🎙</button>
+        <button class="btn" onclick="clearAll()">🗑 Clear</button>
+        <button class="btn btn-primary" id="enhance-live-btn" onclick="showEnhance()" disabled>✨ Enhance with Claude</button>
+      </div>
+    </div>
+
+    <!-- UPLOAD TAB -->
+    <div class="tab-panel" id="tab-upload">
+      <!-- Mic permission step -->
+      <div id="mic-step" style="background:var(--bg3);border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-bottom:16px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+          <div>
+            <div style="font-family:'Syne',sans-serif;font-weight:700;font-size:14px;margin-bottom:4px;">
+              Step 1 — Grant microphone access
+            </div>
+            <div style="font-size:12px;color:var(--muted);line-height:1.5;">
+              Click the button and choose <strong style="color:var(--accent);">"Allow while visiting the site"</strong> — not "Allow this time".
+            </div>
+          </div>
+          <button class="btn" id="grant-mic-btn" onclick="grantMic()" style="flex-shrink:0;gap:8px;">
+            🎤 Grant Mic
+          </button>
+        </div>
+        <div id="mic-status" style="display:none;margin-top:12px;padding:10px 14px;border-radius:10px;font-size:13px;font-family:'DM Mono',monospace;"></div>
+        <!-- One-time fix tip -->
+        <div style="margin-top:12px;padding:10px 14px;background:rgba(245,166,35,0.06);border-radius:10px;font-size:12px;color:var(--muted);line-height:1.6;">
+          💡 <strong style="color:var(--text);">Permanent fix:</strong> Open <code style="color:var(--accent);">chrome://settings/content/microphone</code> → add <code style="color:var(--accent);">file://</code> to the Allowed list. You'll never be prompted again.
+        </div>
+      </div>
+
+      <div class="info-box" style="margin-bottom:16px;">
+        <span class="info-icon">ℹ️</span>
+        <div>
+          <strong>Step 2 — Upload &amp; transcribe.</strong> The app plays your audio through speakers while your mic listens. Use <strong>earphones/headset</strong> for best results, or try <em>Paste Text</em> if you already have rough text.
+        </div>
+      </div>
+
+      <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-input').click()">
+        <input type="file" id="file-input" accept="audio/*,video/mp4,video/webm" onchange="handleFileUpload(this)">
+        <div class="upload-icon">📂</div>
+        <h3>Click or drop your audio file here</h3>
+        <p>MP3, WAV, M4A, OGG, MP4, WebM supported</p>
+      </div>
+
+      <div class="file-info" id="file-info">
+        <span class="file-name" id="file-name-display">—</span>
+        <button class="btn btn-sm" onclick="removeFile()">✕ Remove</button>
+      </div>
+
+      <div id="audio-player-wrap">
+        <audio id="audio-player" controls></audio>
+      </div>
+
+      <div class="options-row" style="margin-top:12px;">
+        <div class="select-wrap">
+          <label>Language</label>
+          <select id="upload-lang">
+            <option value="en-US">English (US)</option>
+            <option value="en-GB">English (UK)</option>
+            <option value="es-ES">Spanish</option>
+            <option value="fr-FR">French</option>
+            <option value="de-DE">German</option>
+            <option value="pt-BR">Portuguese (BR)</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Progress block — hidden until transcription starts -->
+      <div id="progress-block" style="display:none; margin-bottom:16px;">
+        <!-- Status row -->
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <div class="pulse-dots">
+              <div class="pulse-dot"></div>
+              <div class="pulse-dot"></div>
+              <div class="pulse-dot"></div>
+            </div>
+            <span style="font-size:13px;color:var(--accent);font-family:'DM Mono',monospace;" id="progress-label">Listening…</span>
+          </div>
+          <span style="font-size:12px;color:var(--muted);font-family:'DM Mono',monospace;" id="progress-time">0:00 / 0:00</span>
+        </div>
+        <!-- Track bar -->
+        <div style="width:100%;height:10px;background:var(--bg3);border-radius:99px;overflow:hidden;position:relative;">
+          <div id="progress-fill" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--purple));border-radius:99px;transition:width 0.4s linear;position:relative;">
+            <div style="position:absolute;right:0;top:50%;transform:translateY(-50%);width:14px;height:14px;background:white;border-radius:50%;box-shadow:0 0 6px rgba(245,166,35,.8);margin-right:-7px;"></div>
+          </div>
+        </div>
+        <!-- Pct label -->
+        <div style="display:flex;justify-content:space-between;margin-top:5px;">
+          <span style="font-size:11px;color:var(--muted);">0%</span>
+          <span style="font-size:11px;color:var(--accent);font-weight:600;" id="progress-pct">0%</span>
+          <span style="font-size:11px;color:var(--muted);">100%</span>
+        </div>
+        <!-- Word counter -->
+        <div style="margin-top:10px;background:var(--bg3);border-radius:10px;padding:10px 14px;display:flex;gap:24px;">
+          <div>
+            <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--accent);" id="live-words">0</div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;">Words captured</div>
+          </div>
+          <div>
+            <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--purple);" id="live-remaining">—</div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;">Time remaining</div>
+          </div>
+          <div>
+            <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:800;color:var(--green);" id="live-pct-big">0%</div>
+            <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;">Complete</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:12px;flex-wrap:wrap;">
+        <button class="btn btn-primary" id="upload-transcribe-btn" onclick="transcribeFile()" disabled style="flex:1;justify-content:center;">
+          ▶️ Play &amp; Transcribe
+        </button>
+        <button class="btn" id="stop-file-btn" onclick="stopFileTranscription()" style="display:none;">
+          ⏹ Stop
+        </button>
+      </div>
+    </div>
+
+    <!-- PASTE TAB -->
+    <div class="tab-panel" id="tab-paste">
+      <p style="color:var(--muted);font-size:13px;margin-bottom:12px;line-height:1.6;">
+        Already have a rough transcript? Paste it here and Claude will clean it up — adding punctuation, removing filler words, splitting paragraphs, and more.
+      </p>
+      <textarea class="paste-area" id="paste-input" placeholder="Paste your raw transcript text here...&#10;&#10;Example: hello everyone thank you for joining today so um we will be discussing the quarterly results which uh exceeded our projections by approximately fifteen percent this is really great news for the whole team..."></textarea>
+      <button class="btn btn-primary" onclick="loadPastedText()" style="width:100%;justify-content:center;">✅ Load Text &amp; Enhance</button>
+    </div>
+  </div>
+
+  <!-- ENHANCE CARD -->
+  <div class="enhance-card" id="enhance-card">
+    <h3>✨ Claude AI Enhancement</h3>
+    <p>Select the improvements you want, then run Claude to polish the transcript.</p>
+    <div class="enhance-options">
+      <div class="chip selected" data-option="punctuation">Add punctuation</div>
+      <div class="chip selected" data-option="paragraphs">Split paragraphs</div>
+      <div class="chip selected" data-option="clean">Remove filler words</div>
+      <div class="chip" data-option="summary">Add summary</div>
+      <div class="chip" data-option="speaker">Speaker labels</div>
+      <div class="chip" data-option="formal">Formal tone</div>
+      <div class="chip" data-option="bullet">Bullet points</div>
+    </div>
+    <button class="btn btn-primary" id="enhance-btn" onclick="enhanceWithClaude()">Run Claude Enhancement →</button>
+    <div class="loading-bar" id="enhance-loading"><div class="loading-bar-inner"></div></div>
+  </div>
+
+  <!-- TRANSCRIPT OUTPUT -->
+  <div class="transcript-card">
+    <div class="transcript-header">
+      <h2>Transcript</h2>
+      <div class="transcript-actions">
+        <div class="transcript-toggle" id="view-toggle" style="display:none;">
+          <button class="toggle-btn active" onclick="switchView('raw')">Raw</button>
+          <button class="toggle-btn" onclick="switchView('enhanced')">Enhanced</button>
+        </div>
+        <button class="btn btn-sm" onclick="copyTranscript()">📋 Copy</button>
+        <button class="btn btn-sm btn-primary" onclick="downloadTranscript()">⬇ Export</button>
+      </div>
+    </div>
+    <div class="transcript-body">
+      <div class="empty-state" id="empty-state">
+        <div class="icon">🎙</div>
+        <p>Your transcript will appear here</p>
+      </div>
+      <div id="raw-transcript"></div>
+      <div id="enhanced-transcript"></div>
+    </div>
+  </div>
+
+  <div class="stats-row" id="stats-row">
+    <div class="stat-item"><div class="stat-value" id="word-count">0</div><div class="stat-label">Words</div></div>
+    <div class="stat-item"><div class="stat-value" id="char-count">0</div><div class="stat-label">Characters</div></div>
+    <div class="stat-item"><div class="stat-value" id="read-time">0m</div><div class="stat-label">Read Time</div></div>
+    <div class="stat-item"><div class="stat-value" id="rec-duration">—</div><div class="stat-label">Duration</div></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"><span id="toast-icon">✅</span><span id="toast-msg">Done!</span></div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────────
+let recognition = null;
+let isRecording = false;
+let rawText = '';
+let enhancedText = '';
+let timerInterval = null;
+let seconds = 0;
+let audioCtx = null;
+let analyser = null;
+let animFrame = null;
+let uploadedFile = null;
+let currentView = 'raw';
+let fileRecognition = null;
+let fileAudio = null;
+let fileTranscribing = false;
+let micStream = null;        // held open to prevent repeated permission prompts
+
+// ── Visualizer ─────────────────────────────────────────────────────
+const viz = document.getElementById('visualizer');
+for (let i = 0; i < 60; i++) {
+  const b = document.createElement('div'); b.className = 'bar'; viz.appendChild(b);
+}
+const bars = viz.querySelectorAll('.bar');
+
+function animateBars(data) {
+  const step = Math.floor(data.length / bars.length);
+  bars.forEach((bar, i) => {
+    const val = data[i * step] || 100;
+    bar.style.height = Math.max(4, ((val - 80) / 120) * 60 + 4) + 'px';
+    bar.classList.add('active');
+  });
+}
+function resetBars() { bars.forEach(b => { b.style.height = '6px'; b.classList.remove('active'); }); }
+
+// ── Timer ──────────────────────────────────────────────────────────
+function startTimer() {
+  seconds = 0; document.getElementById('timer').textContent = '00:00'; clearInterval(timerInterval);
+  timerInterval = setInterval(() => {
+    seconds++;
+    document.getElementById('timer').textContent = String(Math.floor(seconds/60)).padStart(2,'0') + ':' + String(seconds%60).padStart(2,'0');
+  }, 1000);
+}
+function stopTimer() { clearInterval(timerInterval); }
+
+// ── Tabs ───────────────────────────────────────────────────────────
+function switchTab(tab) {
+  const tabs = ['record','upload','paste'];
+  document.querySelectorAll('.tab').forEach((t,i) => t.classList.toggle('active', tabs[i] === tab));
+  tabs.forEach(t => document.getElementById('tab-'+t).classList.toggle('active', t === tab));
+}
+
+// ── Live Recording ─────────────────────────────────────────────────
+function toggleRecording() { isRecording ? stopRecording() : startRecording(); }
+
+function startRecording() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { showToast('❌','Speech recognition requires Chrome or Edge.'); return; }
+  recognition = new SR();
+  recognition.lang = document.getElementById('lang-select').value;
+  recognition.continuous = document.getElementById('mode-select').value === 'continuous';
+  recognition.interimResults = true;
+  let final = rawText;
+  recognition.onresult = e => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
+      else interim = e.results[i][0].transcript;
+    }
+    rawText = final;
+    setTranscript(final + (interim ? ` [${interim}]` : ''));
+    updateStats(final);
+  };
+  recognition.onerror = e => { if (e.error !== 'no-speech') showToast('❌','Mic: '+e.error); };
+  recognition.onend = () => { if (isRecording) recognition.start(); };
+  recognition.start();
+  isRecording = true; startTimer(); setupMicViz();
+  document.getElementById('record-btn').textContent = '⏹';
+  document.getElementById('record-btn').classList.add('recording');
+  setStatus('recording','Recording...');
+}
+
+function stopRecording() {
+  if (recognition) { recognition.stop(); recognition = null; }
+  isRecording = false; stopTimer(); stopMicViz();
+  document.getElementById('record-btn').textContent = '🎙';
+  document.getElementById('record-btn').classList.remove('recording');
+  setStatus('done','Recording complete');
+  document.getElementById('rec-duration').textContent = seconds+'s';
+  if (rawText.trim()) {
+    document.getElementById('enhance-live-btn').disabled = false;
+    document.getElementById('stats-row').style.display = 'flex';
+    showEnhance();
+  }
+}
+
+async function setupMicViz() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+    analyser = audioCtx.createAnalyser(); analyser.fftSize = 256;
+    audioCtx.createMediaStreamSource(stream).connect(analyser);
+    const data = new Uint8Array(analyser.frequencyBinCount);
+    (function draw(){ animFrame = requestAnimationFrame(draw); analyser.getByteFrequencyData(data); animateBars(data); })();
+  } catch(e){}
+}
+function stopMicViz() {
+  if (animFrame) cancelAnimationFrame(animFrame);
+  if (audioCtx) { audioCtx.close(); audioCtx = null; }
+  resetBars();
+}
+
+// ── File Upload ────────────────────────────────────────────────────
+function handleFileUpload(input) {
+  const file = input.files[0]; if (!file) return;
+  uploadedFile = file;
+  document.getElementById('file-name-display').textContent = file.name;
+  document.getElementById('file-info').classList.add('visible');
+  document.getElementById('upload-zone').style.display = 'none';
+  const player = document.getElementById('audio-player');
+  player.src = URL.createObjectURL(file);
+  document.getElementById('audio-player-wrap').classList.add('visible');
+  // Only enable if mic already granted
+  document.getElementById('upload-transcribe-btn').disabled = !(micStream && micStream.active);
+}
+
+function removeFile() {
+  if (fileTranscribing) stopFileTranscription();
+  uploadedFile = null;
+  document.getElementById('file-input').value = '';
+  document.getElementById('file-info').classList.remove('visible');
+  document.getElementById('upload-zone').style.display = 'block';
+  document.getElementById('audio-player-wrap').classList.remove('visible');
+  document.getElementById('upload-transcribe-btn').disabled = true;
+}
+
+function grantMic() {
+  const btn = document.getElementById('grant-mic-btn');
+  const statusEl = document.getElementById('mic-status');
+  btn.disabled = true;
+  btn.textContent = '⏳ Requesting...';
+  navigator.mediaDevices.getUserMedia({ audio: true, video: false })
+    .then(stream => {
+      micStream = stream; // hold open for entire session
+      btn.textContent = '✅ Mic Granted';
+      btn.style.background = 'rgba(74,222,128,0.15)';
+      btn.style.borderColor = 'var(--green)';
+      btn.style.color = 'var(--green)';
+      statusEl.style.display = 'block';
+      statusEl.style.background = 'rgba(74,222,128,0.1)';
+      statusEl.style.color = 'var(--green)';
+      statusEl.textContent = '✅ Microphone access granted — you can now transcribe files.';
+      document.getElementById('upload-transcribe-btn').disabled = !uploadedFile;
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.textContent = '🎤 Grant Mic';
+      statusEl.style.display = 'block';
+      statusEl.style.background = 'rgba(248,113,113,0.1)';
+      statusEl.style.color = 'var(--red)';
+      statusEl.textContent = '❌ Mic denied. Open chrome://settings/content/microphone → add file:// to Allowed list, then reload.';
+    });
+}
+
+function transcribeFile() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { showToast('❌','Speech recognition requires Chrome or Edge.'); return; }
+  if (!uploadedFile) { showToast('⚠️','Please upload an audio file first.'); return; }
+  if (!micStream || !micStream.active) {
+    showToast('⚠️','Click "Grant Mic" first (Step 1) and choose "Allow while visiting the site".');
+    return;
+  }
+
+  // Reset output
+  rawText = ''; enhancedText = '';
+  setTranscript('');
+  document.getElementById('enhanced-transcript').textContent = '';
+  document.getElementById('enhanced-transcript').style.display = 'none';
+  document.getElementById('view-toggle').style.display = 'none';
+
+  fileAudio = document.getElementById('audio-player');
+  fileAudio.currentTime = 0;
+
+  function makeRecognition() {
+    const r = new SR();
+    r.lang = document.getElementById('upload-lang').value;
+    r.continuous = true;
+    r.interimResults = true;
+
+    let final = rawText;
+
+    r.onresult = e => {
+      let interim = '';
+      for (let i = e.resultIndex; i < e.results.length; i++) {
+        if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
+        else interim = e.results[i][0].transcript;
+      }
+      rawText = final;
+      setTranscript(final + (interim ? ` [${interim}]` : ''));
+      updateStats(final);
+      document.getElementById('stats-row').style.display = 'flex';
+    };
+
+    r.onerror = e => {
+      if (e.error === 'not-allowed' || e.error === 'permission-denied') {
+        fileTranscribing = false;
+        if (fileAudio) fileAudio.pause();
+        document.getElementById('progress-block').style.display = 'none';
+        document.getElementById('upload-transcribe-btn').disabled = false;
+        document.getElementById('stop-file-btn').style.display = 'none';
+        stopTimer();
+        setStatus('', 'Ready');
+        const s = document.getElementById('mic-status');
+        s.style.display = 'block';
+        s.style.background = 'rgba(248,113,113,0.1)';
+        s.style.color = 'var(--red)';
+        s.textContent = '❌ Mic permission was revoked. Please click "Grant Mic" again.';
+        showToast('❌', 'Mic access lost. Re-grant and retry.');
+      }
+      // 'no-speech' is normal silence — SR handles it internally
+    };
+
+    r.onend = () => {
+      if (!fileTranscribing) return;
+      if (fileAudio && !fileAudio.paused && !fileAudio.ended) {
+        // Restart quickly — micStream is still open so Chrome won't re-prompt
+        setTimeout(() => {
+          if (fileTranscribing) {
+            try { fileRecognition = makeRecognition(); fileRecognition.start(); } catch(e) {}
+          }
+        }, 100);
+      } else {
+        finishFileTranscription();
+      }
+    };
+
+    return r;
+  }
+
+  fileRecognition = makeRecognition();
+
+  fileAudio.onended = () => finishFileTranscription();
+
+  fileAudio.ontimeupdate = () => {
+    if (!fileAudio.duration) return;
+    const pct = Math.min(100, (fileAudio.currentTime / fileAudio.duration) * 100);
+    const remaining = fileAudio.duration - fileAudio.currentTime;
+    document.getElementById('progress-fill').style.width = pct.toFixed(1) + '%';
+    document.getElementById('progress-pct').textContent = Math.round(pct) + '%';
+    document.getElementById('live-pct-big').textContent = Math.round(pct) + '%';
+    document.getElementById('progress-time').textContent = fmtTime(fileAudio.currentTime) + ' / ' + fmtTime(fileAudio.duration);
+    document.getElementById('live-remaining').textContent = fmtTime(remaining);
+    const words = rawText.trim().split(/\s+/).filter(Boolean).length;
+    document.getElementById('live-words').textContent = words.toLocaleString();
+    document.getElementById('progress-label').textContent = pct < 100 ? 'Listening & transcribing…' : 'Wrapping up…';
+  };
+
+  fileTranscribing = true;
+  try {
+    fileRecognition.start();
+  } catch(e) {
+    showToast('❌', 'Could not start recognition: ' + e.message);
+    fileTranscribing = false;
+    return;
+  }
+
+  setTimeout(() => {
+    fileAudio.play().then(() => {
+      setStatus('processing', 'Playing audio — mic is listening...');
+      document.getElementById('progress-block').style.display = 'block';
+      document.getElementById('upload-transcribe-btn').disabled = true;
+      document.getElementById('stop-file-btn').style.display = 'inline-flex';
+      startTimer();
+    }).catch(err => {
+      showToast('❌', 'Could not play audio: ' + err.message);
+      stopFileTranscription();
+    });
+  }, 400);
+}
+
+function fmtTime(s) {
+  if (!isFinite(s)) return '0:00';
+  const m = Math.floor(s / 60), sec = Math.floor(s % 60);
+  return m + ':' + String(sec).padStart(2,'0');
+}
+
+function stopFileTranscription() {
+  fileTranscribing = false;
+  if (fileAudio) { fileAudio.pause(); fileAudio.ontimeupdate = null; }
+  if (fileRecognition) { try { fileRecognition.stop(); } catch(e){} fileRecognition = null; }
+  // Release the mic stream — this is safe now because we're completely done
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  finishFileTranscription();
+}
+
+function finishFileTranscription() {
+  fileTranscribing = false;
+  // Release mic if still held
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  stopTimer();
+  // Fill bar to 100% if audio finished naturally
+  if (fileAudio && fileAudio.ended) {
+    document.getElementById('progress-fill').style.width = '100%';
+    document.getElementById('progress-pct').textContent = '100%';
+    document.getElementById('live-pct-big').textContent = '100%';
+    document.getElementById('progress-label').textContent = 'Complete ✓';
+  }
+  document.getElementById('upload-transcribe-btn').disabled = false;
+  document.getElementById('stop-file-btn').style.display = 'none';
+  document.getElementById('rec-duration').textContent = seconds + 's';
+  if (rawText.trim()) {
+    setStatus('done', 'Transcription complete');
+    showToast('✅', 'Done! Now enhance it with Claude ✨');
+    showEnhance();
+  } else {
+    document.getElementById('progress-block').style.display = 'none';
+    setStatus('', 'Ready');
+    showToast('⚠️', 'No speech detected. Ensure speakers are audible to your mic, then try again.');
+  }
+}
+
+// ── Paste Text ─────────────────────────────────────────────────────
+function loadPastedText() {
+  const text = document.getElementById('paste-input').value.trim();
+  if (!text) { showToast('⚠️','Please paste some text first.'); return; }
+  rawText = text;
+  setTranscript(text);
+  updateStats(text);
+  document.getElementById('stats-row').style.display = 'flex';
+  setStatus('done','Text loaded');
+  showToast('✅','Text loaded — select enhancements below!');
+  showEnhance();
+}
+
+// ── Claude Enhancement ─────────────────────────────────────────────
+function showEnhance() {
+  document.getElementById('enhance-card').style.display = 'block';
+  setTimeout(() => document.getElementById('enhance-card').scrollIntoView({behavior:'smooth',block:'nearest'}), 100);
+}
+
+document.querySelectorAll('.chip').forEach(c => c.addEventListener('click', () => c.classList.toggle('selected')));
+
+async function enhanceWithClaude() {
+  if (!rawText.trim()) { showToast('⚠️','No transcript to enhance.'); return; }
+  const selected = [...document.querySelectorAll('.chip.selected')].map(c => c.dataset.option);
+  if (!selected.length) { showToast('⚠️','Select at least one enhancement.'); return; }
+
+  const map = {
+    punctuation: 'Add proper punctuation, capitalization, and fix sentence boundaries.',
+    paragraphs: 'Split into logical paragraphs based on topic changes and natural pauses.',
+    clean: 'Remove filler words (um, uh, like, you know, basically, sort of, etc.).',
+    summary: 'Add a concise 2–3 sentence summary at the top under the heading "## Summary".',
+    speaker: 'Label different speakers as "Speaker 1:", "Speaker 2:" etc. where topic shifts suggest it.',
+    formal: 'Rewrite in a clear, formal, professional tone suitable for business or academic use.',
+    bullet: 'Convert the main ideas into a clean bulleted list.'
+  };
+
+  const tasks = selected.map(k => `• ${map[k]}`).join('\n');
+  const loading = document.getElementById('enhance-loading');
+  const btn = document.getElementById('enhance-btn');
+  loading.classList.add('active'); btn.disabled = true; btn.textContent = 'Running Claude...';
+
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4000,
+        system: 'You are a professional transcription editor. Enhance the provided raw speech transcript per the user instructions. Output ONLY the enhanced transcript — no preamble, no explanation, no commentary.',
+        messages: [{role:'user', content:`Enhance this transcript:\n${tasks}\n\n---\n${rawText}`}]
+      })
+    });
+    const data = await resp.json();
+    if (data.error) throw new Error(data.error.message);
+    enhancedText = (data.content||[]).map(c=>c.text||'').join('').trim();
+    if (!enhancedText) throw new Error('Empty response');
+    document.getElementById('enhanced-transcript').textContent = enhancedText;
+    document.getElementById('enhanced-transcript').style.display = 'block';
+    document.getElementById('view-toggle').style.display = 'flex';
+    switchView('enhanced');
+    showToast('✨','Enhancement complete!');
+  } catch(err) {
+    showToast('❌','Enhancement failed: '+err.message);
+    console.error(err);
+  } finally {
+    loading.classList.remove('active'); btn.disabled = false; btn.textContent = 'Run Claude Enhancement →';
+  }
+}
+
+// ── Helpers ────────────────────────────────────────────────────────
+function setTranscript(text) {
+  document.getElementById('raw-transcript').textContent = text;
+  document.getElementById('empty-state').style.display = text.trim() ? 'none' : 'flex';
+}
+
+function updateStats(text) {
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  document.getElementById('word-count').textContent = words.toLocaleString();
+  document.getElementById('char-count').textContent = text.length.toLocaleString();
+  document.getElementById('read-time').textContent = Math.max(1,Math.round(words/200))+'m';
+}
+
+function setStatus(type, text) {
+  document.getElementById('status-dot').className = 'status-dot' + (type ? ' '+type : '');
+  document.getElementById('status-text').textContent = text;
+}
+
+function switchView(view) {
+  currentView = view;
+  document.getElementById('raw-transcript').style.display = view==='raw'?'block':'none';
+  document.getElementById('enhanced-transcript').style.display = view==='enhanced'?'block':'none';
+  document.querySelectorAll('.toggle-btn').forEach((b,i) => b.classList.toggle('active',(view==='raw'?0:1)===i));
+}
+
+function copyTranscript() {
+  const text = currentView==='enhanced' ? enhancedText : rawText;
+  if (!text.trim()) { showToast('⚠️','Nothing to copy yet.'); return; }
+  navigator.clipboard.writeText(text).then(() => showToast('📋','Copied to clipboard!'));
+}
+
+function downloadTranscript() {
+  const text = currentView==='enhanced' ? enhancedText : rawText;
+  if (!text.trim()) { showToast('⚠️','Nothing to export yet.'); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text],{type:'text/plain'}));
+  a.download = 'voicescript-'+Date.now()+'.txt'; a.click();
+  showToast('⬇','Downloaded!');
+}
+
+function clearAll() {
+  rawText = ''; enhancedText = '';
+  setTranscript('');
+  document.getElementById('enhanced-transcript').textContent = '';
+  document.getElementById('enhanced-transcript').style.display = 'none';
+  document.getElementById('view-toggle').style.display = 'none';
+  document.getElementById('stats-row').style.display = 'none';
+  document.getElementById('enhance-card').style.display = 'none';
+  document.getElementById('enhance-live-btn').disabled = true;
+  document.getElementById('timer').textContent = '00:00';
+  setStatus('','Ready to record');
+  currentView = 'raw';
+}
+
+function showToast(icon, msg) {
+  document.getElementById('toast-icon').textContent = icon;
+  document.getElementById('toast-msg').textContent = msg;
+  const t = document.getElementById('toast');
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 3500);
+}
+
+// ── Drag & Drop ────────────────────────────────────────────────────
+const zone = document.getElementById('upload-zone');
+zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
+zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+zone.addEventListener('drop', e => {
+  e.preventDefault(); zone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0]; if (!file) return;
+  const dt = new DataTransfer(); dt.items.add(file);
+  document.getElementById('file-input').files = dt.files;
+  handleFileUpload(document.getElementById('file-input'));
+});
+</script>
+</body>
+</html>
