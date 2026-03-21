@@ -673,15 +673,13 @@ function stopFileTranscription() {
   fileTranscribing = false;
   if (fileAudio) { fileAudio.pause(); fileAudio.ontimeupdate = null; }
   if (fileRecognition) { try { fileRecognition.stop(); } catch(e){} fileRecognition = null; }
-  // Release the mic stream — this is safe now because we're completely done
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  // Keep micStream alive so user doesn't have to re-grant for the next transcription
   finishFileTranscription();
 }
 
 function finishFileTranscription() {
   fileTranscribing = false;
-  // Release mic if still held
-  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  // Keep micStream alive so user doesn't have to re-grant for the next transcription
   stopTimer();
   // Fill bar to 100% if audio finished naturally
   if (fileAudio && fileAudio.ended) {
