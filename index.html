@@ -215,7 +215,7 @@
       <div class="info-box" style="margin-bottom:16px;">
         <span class="info-icon">🤖</span>
         <div>
-          <strong>AI-powered transcription.</strong> Upload your audio file and Whisper AI will transcribe it directly — no microphone needed. The AI model downloads once (~80 MB) and is cached in your browser.
+          <strong>AI-powered transcription.</strong> Upload your audio file and Whisper AI will transcribe it directly — no microphone needed. The AI model downloads once (~250 MB) and is cached in your browser.
         </div>
       </div>
 
@@ -506,7 +506,7 @@ function removeFile() {
 async function loadWhisperModel(onProgress) {
   if (whisperPipeline) return whisperPipeline;
   const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
-  whisperPipeline = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-base', {
+  whisperPipeline = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-small', {
     dtype: 'q8',
     device: 'wasm',
     progress_callback: onProgress
@@ -514,10 +514,17 @@ async function loadWhisperModel(onProgress) {
   return whisperPipeline;
 }
 
+// Check if audio chunk is mostly silence (RMS energy below threshold)
+function isSilent(audioData, threshold) {
+  let sumSq = 0;
+  for (let i = 0; i < audioData.length; i++) sumSq += audioData[i] * audioData[i];
+  const rms = Math.sqrt(sumSq / audioData.length);
+  return rms < (threshold || 0.01);
+}
+
 // Detect hallucinated text: repetitive phrases are a sign of Whisper hallucination
 function isHallucinated(text) {
   if (!text || text.length < 20) return false;
-  // Check compression ratio — highly repetitive text compresses well
   const words = text.trim().split(/\s+/);
   if (words.length < 4) return false;
   // Count unique 3-grams vs total 3-grams
@@ -529,8 +536,8 @@ function isHallucinated(text) {
   }
   if (total === 0) return false;
   const uniqueRatio = ngrams.size / total;
-  // If less than 20% of 3-grams are unique, it's repetitive hallucination
-  return uniqueRatio < 0.2;
+  // If less than 30% of 3-grams are unique, it's repetitive hallucination
+  return uniqueRatio < 0.3;
 }
 
 // Resample audio from source rate to 16kHz for Whisper
@@ -636,15 +643,27 @@ async function transcribeFile() {
       // Resample to 16kHz for Whisper
       const resampled = resampleTo16k(chunk, sourceSampleRate);
 
-      const result = await transcriber(resampled, {
-        language: langCode,
-        task: 'transcribe',
-        no_repeat_ngram_size: 3
-      });
+      // Skip silent chunks — Whisper hallucinates on silence
+      let chunkCaption = '';
+      if (isSilent(resampled)) {
+        chunkCaption = '(silence — skipped)';
+      } else {
+        const result = await transcriber(resampled, {
+          language: langCode,
+          task: 'transcribe',
+          no_repeat_ngram_size: 3,
+          repetition_penalty: 1.2,
+          max_new_tokens: 448,
+          condition_on_previous_text: false
+        });
 
-      const chunkText = result.text.trim();
-      if (chunkText && !isHallucinated(chunkText)) {
-        rawText += (rawText ? ' ' : '') + chunkText;
+        const chunkText = result.text.trim();
+        if (chunkText && !isHallucinated(chunkText)) {
+          rawText += (rawText ? ' ' : '') + chunkText;
+          chunkCaption = chunkText;
+        } else {
+          chunkCaption = chunkText ? '(filtered — hallucination detected)' : '(no speech)';
+        }
       }
 
       // Update progress
@@ -662,7 +681,7 @@ async function transcribeFile() {
       document.getElementById('live-words').textContent = words.toLocaleString();
 
       // Live caption — show latest recognized text
-      document.getElementById('live-caption-text').textContent = chunkText || '(silence)';
+      document.getElementById('live-caption-text').textContent = chunkCaption;
 
       // Update full transcript
       setTranscript(rawText);
