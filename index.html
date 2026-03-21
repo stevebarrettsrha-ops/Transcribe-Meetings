@@ -531,6 +531,18 @@ async function transcribeFile() {
   document.getElementById('progress-block').style.display = 'block';
   document.getElementById('live-caption-box').style.display = 'block';
 
+  // Get duration from audio player
+  const player = document.getElementById('audio-player');
+  const totalDuration = player.duration && isFinite(player.duration) ? player.duration : 0;
+
+  // Initialize progress display
+  document.getElementById('progress-time').textContent = '0:00 / ' + fmtTime(totalDuration);
+  document.getElementById('live-remaining').textContent = fmtTime(totalDuration);
+  document.getElementById('live-words').textContent = '0';
+  document.getElementById('live-pct-big').textContent = '0%';
+  document.getElementById('progress-fill').style.width = '0%';
+  document.getElementById('progress-pct').textContent = '0%';
+
   try {
     // Step 1: Load Whisper model (cached after first download)
     document.getElementById('progress-label').textContent = 'Loading AI model…';
@@ -552,73 +564,64 @@ async function transcribeFile() {
 
     if (!fileTranscribing) return;
 
-    // Step 2: Decode audio to 16kHz mono
-    document.getElementById('progress-label').textContent = 'Decoding audio…';
-    document.getElementById('progress-fill').style.width = '0%';
-    document.getElementById('progress-pct').textContent = '0%';
-    document.getElementById('live-caption-text').textContent = 'Preparing audio for transcription…';
-    setStatus('processing', 'Decoding audio…');
-
-    const arrayBuffer = await uploadedFile.arrayBuffer();
-    const decodeCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
-    const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer);
-    const audioData = audioBuffer.getChannelData(0); // mono, 16kHz
-    decodeCtx.close();
-
-    if (!fileTranscribing) return;
-
-    // Step 3: Transcribe in 30-second chunks with live updates
-    const CHUNK_SECS = 30;
-    const SAMPLE_RATE = 16000;
-    const chunkSamples = CHUNK_SECS * SAMPLE_RATE;
-    const totalDuration = audioData.length / SAMPLE_RATE;
-    const totalChunks = Math.ceil(audioData.length / chunkSamples);
-    const langCode = document.getElementById('upload-lang').value.split('-')[0]; // 'en-US' -> 'en'
+    // Step 2: Transcribe audio directly via pipeline (handles decoding + chunking internally)
+    const langCode = document.getElementById('upload-lang').value.split('-')[0];
+    const audioUrl = URL.createObjectURL(uploadedFile);
 
     document.getElementById('progress-label').textContent = 'Transcribing…';
+    document.getElementById('progress-fill').style.width = '0%';
+    document.getElementById('progress-pct').textContent = '0%';
+    document.getElementById('live-caption-text').textContent =
+      totalDuration > 1800
+        ? 'Processing ' + fmtTime(totalDuration) + ' of audio. Long recordings may take 10–30 minutes…'
+        : 'Processing audio with Whisper AI…';
     setStatus('processing', 'Transcribing with Whisper AI…');
     startTimer();
 
-    for (let i = 0; i < totalChunks; i++) {
-      if (!fileTranscribing) break;
+    // Estimate progress based on elapsed time
+    const estimatedSecsPerChunk = 8; // ~8s processing per 30s chunk on average
+    const estTotalSecs = Math.max(1, (totalDuration / 30) * estimatedSecsPerChunk);
+    const progressInterval = setInterval(() => {
+      if (!fileTranscribing) { clearInterval(progressInterval); return; }
+      const elapsed = seconds;
+      const estPct = Math.min(95, (elapsed / estTotalSecs) * 100);
+      document.getElementById('progress-fill').style.width = estPct.toFixed(1) + '%';
+      document.getElementById('progress-pct').textContent = Math.round(estPct) + '%';
+      document.getElementById('live-pct-big').textContent = Math.round(estPct) + '%';
+      // Estimate audio position based on elapsed time
+      const estProcessed = Math.min(totalDuration, (elapsed / estTotalSecs) * totalDuration);
+      document.getElementById('progress-time').textContent = fmtTime(estProcessed) + ' / ' + fmtTime(totalDuration);
+      document.getElementById('live-remaining').textContent = fmtTime(Math.max(0, estTotalSecs - elapsed));
+    }, 1000);
 
-      const start = i * chunkSamples;
-      const end = Math.min(start + chunkSamples, audioData.length);
-      const chunk = audioData.slice(start, end);
+    const result = await transcriber(audioUrl, {
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      language: langCode,
+      task: 'transcribe',
+      return_timestamps: true
+    });
 
-      const result = await transcriber(chunk, {
-        language: langCode,
-        task: 'transcribe'
-      });
+    clearInterval(progressInterval);
+    URL.revokeObjectURL(audioUrl);
 
-      const chunkText = result.text.trim();
-      if (chunkText) rawText += (rawText ? ' ' : '') + chunkText;
+    if (!fileTranscribing) return;
 
-      // Update progress
-      const pct = Math.min(100, ((i + 1) / totalChunks) * 100);
-      const processed = Math.min(totalDuration, (i + 1) * CHUNK_SECS);
-      const remaining = Math.max(0, totalDuration - processed);
-
-      document.getElementById('progress-fill').style.width = pct.toFixed(1) + '%';
-      document.getElementById('progress-pct').textContent = Math.round(pct) + '%';
-      document.getElementById('live-pct-big').textContent = Math.round(pct) + '%';
-      document.getElementById('progress-time').textContent = fmtTime(processed) + ' / ' + fmtTime(totalDuration);
-      document.getElementById('live-remaining').textContent = fmtTime(remaining);
-
-      const words = rawText.trim().split(/\s+/).filter(Boolean).length;
-      document.getElementById('live-words').textContent = words.toLocaleString();
-
-      // Live caption — show latest chunk
-      document.getElementById('live-caption-text').textContent = chunkText || '(silence)';
-
-      // Update full transcript
-      setTranscript(rawText);
-      updateStats(rawText);
-      document.getElementById('stats-row').style.display = 'flex';
-
-      // Auto-scroll transcript into view
-      document.getElementById('raw-transcript').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    // Extract text from result
+    if (result.chunks && result.chunks.length > 0) {
+      rawText = result.chunks.map(c => c.text.trim()).filter(Boolean).join(' ');
+    } else {
+      rawText = (result.text || '').trim();
     }
+
+    // Update UI with final result
+    setTranscript(rawText);
+    updateStats(rawText);
+    document.getElementById('stats-row').style.display = 'flex';
+    const words = rawText.trim().split(/\s+/).filter(Boolean).length;
+    document.getElementById('live-words').textContent = words.toLocaleString();
+    document.getElementById('live-caption-text').textContent = rawText.slice(-200);
+    document.getElementById('raw-transcript').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
     finishFileTranscription();
   } catch(err) {
