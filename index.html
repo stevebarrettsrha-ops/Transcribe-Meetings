@@ -616,11 +616,12 @@ async function transcribeFile() {
 
     if (!fileTranscribing) return;
 
-    // Step 3: Transcribe in 30-second chunks with live updates
-    const CHUNK_SECS = 30;
-    const chunkSamples = CHUNK_SECS * sourceSampleRate;
+    // Step 3: Transcribe in 3-minute segments with pipeline's built-in chunking
+    // Pipeline handles 30s windowing + stride internally for proper quality
+    const SEGMENT_SECS = 180; // 3-minute segments for live updates
+    const segmentSamples = SEGMENT_SECS * sourceSampleRate;
     const totalDuration = audioData.length / sourceSampleRate;
-    const totalChunks = Math.ceil(audioData.length / chunkSamples);
+    const totalSegments = Math.ceil(audioData.length / segmentSamples);
     const langCode = document.getElementById('upload-lang').value.split('-')[0];
 
     document.getElementById('progress-label').textContent = 'Transcribing…';
@@ -629,46 +630,68 @@ async function transcribeFile() {
     setStatus('processing', 'Transcribing with Whisper AI…');
     startTimer();
 
-    for (let i = 0; i < totalChunks; i++) {
+    for (let i = 0; i < totalSegments; i++) {
       if (!fileTranscribing) break;
 
-      // Show which chunk is being processed BEFORE processing
-      document.getElementById('live-caption-text').textContent =
-        'Processing chunk ' + (i + 1) + ' of ' + totalChunks + '…';
+      const segStart = i * segmentSamples;
+      const segEnd = Math.min(segStart + segmentSamples, audioData.length);
+      const segment = audioData.slice(segStart, segEnd);
 
-      const start = i * chunkSamples;
-      const end = Math.min(start + chunkSamples, audioData.length);
-      const chunk = audioData.slice(start, end);
+      // Resample segment to 16kHz for Whisper
+      const resampled = resampleTo16k(segment, sourceSampleRate);
 
-      // Resample to 16kHz for Whisper
-      const resampled = resampleTo16k(chunk, sourceSampleRate);
+      let segCaption = '';
 
-      // Skip silent chunks — Whisper hallucinates on silence
-      let chunkCaption = '';
+      // Skip silent segments
       if (isSilent(resampled)) {
-        chunkCaption = '(silence — skipped)';
+        segCaption = '(silence — skipped)';
       } else {
+        // Show progress BEFORE processing
+        const segStartTime = fmtTime(i * SEGMENT_SECS);
+        const segEndTime = fmtTime(Math.min((i + 1) * SEGMENT_SECS, totalDuration));
+        document.getElementById('live-caption-text').textContent =
+          'Transcribing ' + segStartTime + ' – ' + segEndTime +
+          '  (segment ' + (i + 1) + ' of ' + totalSegments + ')…';
+
+        // Use pipeline with built-in chunking + stride for quality
+        // Parameters MUST go in generate_kwargs to take effect
         const result = await transcriber(resampled, {
           language: langCode,
           task: 'transcribe',
-          no_repeat_ngram_size: 3,
-          repetition_penalty: 1.2,
-          max_new_tokens: 448,
-          condition_on_previous_text: false
+          chunk_length_s: 30,
+          stride_length_s: 5,
+          return_timestamps: true,
+          generate_kwargs: {
+            no_repeat_ngram_size: 3,
+            repetition_penalty: 1.2,
+            max_new_tokens: 448
+          }
         });
 
-        const chunkText = result.text.trim();
-        if (chunkText && !isHallucinated(chunkText)) {
-          rawText += (rawText ? ' ' : '') + chunkText;
-          chunkCaption = chunkText;
+        // Extract text, filtering hallucinated chunks
+        let segText = '';
+        if (result.chunks && result.chunks.length > 0) {
+          segText = result.chunks
+            .map(c => c.text.trim())
+            .filter(t => t && !isHallucinated(t))
+            .join(' ');
         } else {
-          chunkCaption = chunkText ? '(filtered — hallucination detected)' : '(no speech)';
+          segText = (result.text || '').trim();
+          if (isHallucinated(segText)) segText = '';
+        }
+
+        if (segText) {
+          rawText += (rawText ? ' ' : '') + segText;
+          // Show last ~100 chars of recognized text
+          segCaption = segText.length > 100 ? '…' + segText.slice(-100) : segText;
+        } else {
+          segCaption = '(no speech detected in this segment)';
         }
       }
 
       // Update progress
-      const pct = Math.min(100, ((i + 1) / totalChunks) * 100);
-      const processed = Math.min(totalDuration, (i + 1) * CHUNK_SECS);
+      const pct = Math.min(100, ((i + 1) / totalSegments) * 100);
+      const processed = Math.min(totalDuration, (i + 1) * SEGMENT_SECS);
       const remaining = Math.max(0, totalDuration - processed);
 
       document.getElementById('progress-fill').style.width = pct.toFixed(1) + '%';
@@ -681,7 +704,7 @@ async function transcribeFile() {
       document.getElementById('live-words').textContent = words.toLocaleString();
 
       // Live caption — show latest recognized text
-      document.getElementById('live-caption-text').textContent = chunkCaption;
+      document.getElementById('live-caption-text').textContent = segCaption;
 
       // Update full transcript
       setTranscript(rawText);
