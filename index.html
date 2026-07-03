@@ -144,6 +144,14 @@
   .stat-value { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 24px; color: var(--accent); letter-spacing: -1px; }
   .stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; margin-top: 2px; }
 
+  /* Export menu */
+  .export-wrap { position: relative; }
+  .export-menu { position: absolute; top: calc(100% + 6px); right: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 6px; display: none; z-index: 60; min-width: 190px; box-shadow: 0 8px 24px rgba(0,0,0,.45); }
+  .export-menu.open { display: block; }
+  .export-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 9px 12px; border: none; background: transparent; color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 13px; border-radius: 8px; cursor: pointer; text-align: left; transition: background .15s; }
+  .export-item:hover { background: var(--bg3); }
+  .export-item small { color: var(--muted); margin-left: auto; font-size: 11px; }
+
   .toast { position: fixed; bottom: 24px; right: 24px; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 14px 20px; font-size: 14px; display: flex; align-items: center; gap: 10px; transform: translateY(100px); opacity: 0; transition: all .3s; z-index: 100; max-width: 340px; }
   .toast.show { transform: translateY(0); opacity: 1; }
 </style>
@@ -193,6 +201,13 @@
             <option value="single">Single phrase</option>
           </select>
         </div>
+        <div class="select-wrap">
+          <label>Engine</label>
+          <select id="engine-select">
+            <option value="browser">Instant (browser)</option>
+            <option value="whisper">High accuracy (Whisper AI)</option>
+          </select>
+        </div>
       </div>
       <div class="visualizer" id="visualizer"></div>
       <div class="status-row">
@@ -215,7 +230,7 @@
       <div class="info-box" style="margin-bottom:16px;">
         <span class="info-icon">🤖</span>
         <div>
-          <strong>AI-powered transcription.</strong> Upload your audio file and Whisper AI will transcribe it directly — no microphone needed. The AI model downloads once (~250 MB) and is cached in your browser.
+          <strong>AI-powered transcription.</strong> Upload your audio file and Whisper AI will transcribe it directly — no microphone needed. The model downloads once and is cached in your browser. GPU acceleration (WebGPU) is used automatically when available for faster, higher-quality results.
         </div>
       </div>
 
@@ -245,6 +260,14 @@
             <option value="fr-FR">French</option>
             <option value="de-DE">German</option>
             <option value="pt-BR">Portuguese (BR)</option>
+          </select>
+        </div>
+        <div class="select-wrap">
+          <label>Accuracy</label>
+          <select id="quality-select" onchange="warnIfSlowModel()">
+            <option value="base">Fast (base · ~80 MB)</option>
+            <option value="small" selected>Balanced (small · ~250 MB)</option>
+            <option value="turbo">Maximum (large-v3-turbo · ~600 MB)</option>
           </select>
         </div>
       </div>
@@ -345,7 +368,14 @@
           <button class="toggle-btn" onclick="switchView('enhanced')">Enhanced</button>
         </div>
         <button class="btn btn-sm" onclick="copyTranscript()">📋 Copy</button>
-        <button class="btn btn-sm btn-primary" onclick="downloadTranscript()">⬇ Export</button>
+        <div class="export-wrap">
+          <button class="btn btn-sm btn-primary" onclick="toggleExportMenu(event)">⬇ Export ▾</button>
+          <div class="export-menu" id="export-menu">
+            <button class="export-item" onclick="exportAs('txt')">📄 Plain text <small>.txt</small></button>
+            <button class="export-item" onclick="exportAs('doc')">📝 Word document <small>.doc</small></button>
+            <button class="export-item" onclick="exportAs('pdf')">📕 PDF document <small>.pdf</small></button>
+          </div>
+        </div>
       </div>
     </div>
     <div class="transcript-body">
@@ -384,7 +414,11 @@ let currentView = 'raw';
 let fileRecognition = null;
 let fileAudio = null;
 let fileTranscribing = false;
-let whisperPipeline = null;  // cached Whisper model
+let whisperPipelines = {};   // cached Whisper models, keyed by quality
+let whisperDevice = null;    // 'webgpu' or 'wasm', detected once
+let mediaRecorder = null;    // high-accuracy live recording
+let recordedChunks = [];
+let micStream = null;
 
 // ── Visualizer ─────────────────────────────────────────────────────
 const viz = document.getElementById('visualizer');
@@ -424,18 +458,28 @@ function switchTab(tab) {
 function toggleRecording() { isRecording ? stopRecording() : startRecording(); }
 
 function startRecording() {
+  if (document.getElementById('engine-select').value === 'whisper') { startWhisperRecording(); return; }
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SR) { showToast('❌','Speech recognition requires Chrome or Edge.'); return; }
   recognition = new SR();
   recognition.lang = document.getElementById('lang-select').value;
   recognition.continuous = document.getElementById('mode-select').value === 'continuous';
   recognition.interimResults = true;
+  recognition.maxAlternatives = 3;
   let final = rawText;
   recognition.onresult = e => {
     let interim = '';
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      if (e.results[i].isFinal) final += e.results[i][0].transcript + ' ';
-      else interim = e.results[i][0].transcript;
+      if (e.results[i].isFinal) {
+        // Pick the alternative the recognizer is most confident in
+        let best = e.results[i][0];
+        for (let j = 1; j < e.results[i].length; j++) {
+          if (e.results[i][j].confidence > best.confidence) best = e.results[i][j];
+        }
+        final += best.transcript + ' ';
+      } else {
+        interim = e.results[i][0].transcript;
+      }
     }
     rawText = final;
     setTranscript(final + (interim ? ` [${interim}]` : ''));
@@ -450,13 +494,39 @@ function startRecording() {
   setStatus('recording','Recording...');
 }
 
+async function startWhisperRecording() {
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }
+    });
+  } catch (e) {
+    showToast('❌','Microphone access denied.');
+    return;
+  }
+  recordedChunks = [];
+  const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : '';
+  mediaRecorder = new MediaRecorder(micStream, mime ? { mimeType: mime, audioBitsPerSecond: 128000 } : undefined);
+  mediaRecorder.ondataavailable = e => { if (e.data.size) recordedChunks.push(e.data); };
+  mediaRecorder.onstop = () => transcribeRecording();
+  mediaRecorder.start(1000);
+  isRecording = true; startTimer(); setupMicViz(micStream);
+  document.getElementById('record-btn').textContent = '⏹';
+  document.getElementById('record-btn').classList.add('recording');
+  setStatus('recording','Recording (high accuracy)...');
+}
+
 function stopRecording() {
   if (recognition) { recognition.stop(); recognition = null; }
   isRecording = false; stopTimer(); stopMicViz();
   document.getElementById('record-btn').textContent = '🎙';
   document.getElementById('record-btn').classList.remove('recording');
-  setStatus('done','Recording complete');
   document.getElementById('rec-duration').textContent = seconds+'s';
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop(); // fires onstop → transcribeRecording()
+    micStream.getTracks().forEach(t => t.stop());
+    return;
+  }
+  setStatus('done','Recording complete');
   if (rawText.trim()) {
     document.getElementById('enhance-live-btn').disabled = false;
     document.getElementById('stats-row').style.display = 'flex';
@@ -464,9 +534,59 @@ function stopRecording() {
   }
 }
 
-async function setupMicViz() {
+async function transcribeRecording() {
+  const blob = new Blob(recordedChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+  mediaRecorder = null; recordedChunks = []; micStream = null;
+  if (!blob.size) { setStatus('','Ready to record'); return; }
+
   try {
-    const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+    setStatus('processing','Loading Whisper AI…');
+    const transcriber = await loadWhisperModel('small', p => {
+      if (p.status === 'progress' && p.progress) {
+        setStatus('processing','Downloading model… ' + Math.round(p.progress) + '%');
+      }
+    });
+
+    setStatus('processing','Preparing audio…');
+    const audio = await preprocessAudio(await blob.arrayBuffer());
+    const langCode = document.getElementById('lang-select').value.split('-')[0];
+
+    setStatus('processing','Transcribing with Whisper AI…');
+    const SEG = 180 * 16000;
+    for (let s = 0; s < audio.length; s += SEG) {
+      const segment = audio.slice(s, s + SEG);
+      if (isSilent(segment)) continue;
+      const result = await transcriber(segment, { language: langCode, ...WHISPER_OPTS });
+      const segText = extractSegmentText(result);
+      if (segText) {
+        rawText += (rawText ? ' ' : '') + segText;
+        setTranscript(rawText);
+        updateStats(rawText);
+      }
+      setStatus('processing','Transcribing… ' + Math.min(100, Math.round(((s + SEG) / audio.length) * 100)) + '%');
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    if (rawText.trim()) {
+      setStatus('done','Transcription complete');
+      document.getElementById('enhance-live-btn').disabled = false;
+      document.getElementById('stats-row').style.display = 'flex';
+      showEnhance();
+      showToast('✅','High-accuracy transcript ready!');
+    } else {
+      setStatus('','Ready to record');
+      showToast('⚠️','No speech detected in the recording.');
+    }
+  } catch (err) {
+    console.error('Whisper recording error:', err);
+    setStatus('','Ready to record');
+    showToast('❌','Transcription failed: ' + err.message);
+  }
+}
+
+async function setupMicViz(existingStream) {
+  try {
+    const stream = existingStream || await navigator.mediaDevices.getUserMedia({audio:true});
     audioCtx = new (window.AudioContext||window.webkitAudioContext)();
     analyser = audioCtx.createAnalyser(); analyser.fftSize = 256;
     audioCtx.createMediaStreamSource(stream).connect(analyser);
@@ -503,15 +623,45 @@ function removeFile() {
   document.getElementById('upload-transcribe-btn').disabled = true;
 }
 
-async function loadWhisperModel(onProgress) {
-  if (whisperPipeline) return whisperPipeline;
+const WHISPER_MODELS = {
+  base:  'onnx-community/whisper-base',
+  small: 'onnx-community/whisper-small',
+  turbo: 'onnx-community/whisper-large-v3-turbo'
+};
+
+async function getWhisperDevice() {
+  if (whisperDevice) return whisperDevice;
+  try {
+    whisperDevice = (navigator.gpu && await navigator.gpu.requestAdapter()) ? 'webgpu' : 'wasm';
+  } catch (e) {
+    whisperDevice = 'wasm';
+  }
+  return whisperDevice;
+}
+
+async function warnIfSlowModel() {
+  const q = document.getElementById('quality-select').value;
+  if (q === 'turbo' && (await getWhisperDevice()) !== 'webgpu') {
+    showToast('⚠️', 'Your browser has no GPU acceleration — Maximum accuracy will be slow. Balanced is recommended.');
+  }
+}
+
+async function loadWhisperModel(quality, onProgress) {
+  if (whisperPipelines[quality]) return whisperPipelines[quality];
   const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
-  whisperPipeline = await pipeline('automatic-speech-recognition', 'onnx-community/whisper-small', {
-    dtype: 'q8',
-    device: 'wasm',
-    progress_callback: onProgress
-  });
-  return whisperPipeline;
+  const device = await getWhisperDevice();
+  const opts = device === 'webgpu'
+    ? { dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' }, device: 'webgpu' }
+    : { dtype: 'q8', device: 'wasm' };
+  try {
+    whisperPipelines[quality] = await pipeline('automatic-speech-recognition', WHISPER_MODELS[quality], { ...opts, progress_callback: onProgress });
+  } catch (err) {
+    if (device !== 'webgpu') throw err;
+    // GPU init can fail on some drivers — fall back to CPU
+    whisperDevice = 'wasm';
+    whisperPipelines[quality] = await pipeline('automatic-speech-recognition', WHISPER_MODELS[quality], { dtype: 'q8', device: 'wasm', progress_callback: onProgress });
+  }
+  return whisperPipelines[quality];
 }
 
 // Check if audio chunk is mostly silence (RMS energy below threshold)
@@ -556,6 +706,69 @@ function resampleTo16k(data, sourceSampleRate) {
   return result;
 }
 
+// Decode + clean audio for Whisper: anti-aliased resample to 16kHz mono,
+// downmix all channels, high-pass filter to cut low-frequency rumble,
+// and boost quiet recordings so speech sits in the model's sweet spot.
+async function preprocessAudio(arrayBuffer) {
+  const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer);
+  decodeCtx.close();
+
+  let data;
+  try {
+    const offline = new OfflineAudioContext(1, Math.ceil(audioBuffer.duration * 16000), 16000);
+    const src = offline.createBufferSource();
+    src.buffer = audioBuffer;
+    const highpass = offline.createBiquadFilter();
+    highpass.type = 'highpass';
+    highpass.frequency.value = 80; // remove hum/rumble below speech range
+    src.connect(highpass);
+    highpass.connect(offline.destination);
+    src.start();
+    data = (await offline.startRendering()).getChannelData(0);
+  } catch (e) {
+    data = resampleTo16k(audioBuffer.getChannelData(0), audioBuffer.sampleRate);
+  }
+
+  let peak = 0;
+  for (let i = 0; i < data.length; i++) {
+    const a = Math.abs(data[i]);
+    if (a > peak) peak = a;
+  }
+  if (peak > 0.001 && peak < 0.9) {
+    const gain = Math.min(0.9 / peak, 30); // cap gain so silence isn't blown up into noise
+    for (let i = 0; i < data.length; i++) data[i] *= gain;
+  }
+  return data;
+}
+
+// Pull clean text out of a Whisper result, dropping hallucinated chunks
+function extractSegmentText(result) {
+  let segText = '';
+  if (result.chunks && result.chunks.length > 0) {
+    segText = result.chunks
+      .map(c => c.text.trim())
+      .filter(t => t && !isHallucinated(t))
+      .join(' ');
+  } else {
+    segText = (result.text || '').trim();
+    if (isHallucinated(segText)) segText = '';
+  }
+  return segText;
+}
+
+const WHISPER_OPTS = {
+  task: 'transcribe',
+  chunk_length_s: 30,
+  stride_length_s: 5,
+  return_timestamps: true,
+  generate_kwargs: {
+    no_repeat_ngram_size: 3,
+    repetition_penalty: 1.2,
+    max_new_tokens: 448
+  }
+};
+
 async function transcribeFile() {
   if (!uploadedFile) { showToast('⚠️','Please upload an audio file first.'); return; }
 
@@ -585,7 +798,8 @@ async function transcribeFile() {
     document.getElementById('live-caption-text').textContent = 'Downloading Whisper speech recognition model (first time only)…';
     setStatus('processing', 'Loading AI model…');
 
-    const transcriber = await loadWhisperModel((progress) => {
+    const quality = document.getElementById('quality-select').value;
+    const transcriber = await loadWhisperModel(quality, (progress) => {
       if (progress.status === 'progress' && progress.progress) {
         const pct = Math.round(progress.progress);
         document.getElementById('progress-fill').style.width = pct + '%';
@@ -600,27 +814,22 @@ async function transcribeFile() {
 
     if (!fileTranscribing) return;
 
-    // Step 2: Decode audio at native sample rate
-    document.getElementById('progress-label').textContent = 'Decoding audio…';
+    // Step 2: Decode + clean audio (anti-aliased 16kHz resample, high-pass, normalize)
+    document.getElementById('progress-label').textContent = 'Preparing audio…';
     document.getElementById('progress-fill').style.width = '0%';
     document.getElementById('progress-pct').textContent = '0%';
-    document.getElementById('live-caption-text').textContent = 'Decoding audio file…';
-    setStatus('processing', 'Decoding audio…');
+    document.getElementById('live-caption-text').textContent = 'Cleaning up audio (' + (whisperDevice === 'webgpu' ? 'GPU accelerated' : 'CPU mode') + ')…';
+    setStatus('processing', 'Preparing audio…');
 
-    const arrayBuffer = await uploadedFile.arrayBuffer();
-    const decodeCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const audioBuffer = await decodeCtx.decodeAudioData(arrayBuffer);
-    const sourceSampleRate = audioBuffer.sampleRate;
-    const audioData = audioBuffer.getChannelData(0); // mono
-    decodeCtx.close();
+    const audioData = await preprocessAudio(await uploadedFile.arrayBuffer());
 
     if (!fileTranscribing) return;
 
     // Step 3: Transcribe in 3-minute segments with pipeline's built-in chunking
     // Pipeline handles 30s windowing + stride internally for proper quality
     const SEGMENT_SECS = 180; // 3-minute segments for live updates
-    const segmentSamples = SEGMENT_SECS * sourceSampleRate;
-    const totalDuration = audioData.length / sourceSampleRate;
+    const segmentSamples = SEGMENT_SECS * 16000;
+    const totalDuration = audioData.length / 16000;
     const totalSegments = Math.ceil(audioData.length / segmentSamples);
     const langCode = document.getElementById('upload-lang').value.split('-')[0];
 
@@ -637,13 +846,10 @@ async function transcribeFile() {
       const segEnd = Math.min(segStart + segmentSamples, audioData.length);
       const segment = audioData.slice(segStart, segEnd);
 
-      // Resample segment to 16kHz for Whisper
-      const resampled = resampleTo16k(segment, sourceSampleRate);
-
       let segCaption = '';
 
       // Skip silent segments
-      if (isSilent(resampled)) {
+      if (isSilent(segment)) {
         segCaption = '(silence — skipped)';
       } else {
         // Show progress BEFORE processing
@@ -654,31 +860,9 @@ async function transcribeFile() {
           '  (segment ' + (i + 1) + ' of ' + totalSegments + ')…';
 
         // Use pipeline with built-in chunking + stride for quality
-        // Parameters MUST go in generate_kwargs to take effect
-        const result = await transcriber(resampled, {
-          language: langCode,
-          task: 'transcribe',
-          chunk_length_s: 30,
-          stride_length_s: 5,
-          return_timestamps: true,
-          generate_kwargs: {
-            no_repeat_ngram_size: 3,
-            repetition_penalty: 1.2,
-            max_new_tokens: 448
-          }
-        });
+        const result = await transcriber(segment, { language: langCode, ...WHISPER_OPTS });
 
-        // Extract text, filtering hallucinated chunks
-        let segText = '';
-        if (result.chunks && result.chunks.length > 0) {
-          segText = result.chunks
-            .map(c => c.text.trim())
-            .filter(t => t && !isHallucinated(t))
-            .join(' ');
-        } else {
-          segText = (result.text || '').trim();
-          if (isHallucinated(segText)) segText = '';
-        }
+        const segText = extractSegmentText(result);
 
         if (segText) {
           rawText += (rawText ? ' ' : '') + segText;
@@ -864,13 +1048,104 @@ function copyTranscript() {
   navigator.clipboard.writeText(text).then(() => showToast('📋','Copied to clipboard!'));
 }
 
-function downloadTranscript() {
-  const text = currentView==='enhanced' ? enhancedText : rawText;
-  if (!text.trim()) { showToast('⚠️','Nothing to export yet.'); return; }
+// ── Export (TXT / DOC / PDF) ───────────────────────────────────────
+function toggleExportMenu(e) {
+  e.stopPropagation();
+  document.getElementById('export-menu').classList.toggle('open');
+}
+document.addEventListener('click', () => document.getElementById('export-menu').classList.remove('open'));
+
+function downloadBlob(blob, filename) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text],{type:'text/plain'}));
-  a.download = 'voicescript-'+Date.now()+'.txt'; a.click();
-  showToast('⬇','Downloaded!');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function transcriptMeta(text) {
+  return {
+    words: text.trim().split(/\s+/).filter(Boolean).length,
+    date: new Date().toLocaleDateString(undefined, { year:'numeric', month:'long', day:'numeric' })
+  };
+}
+
+async function exportAs(fmt) {
+  const text = currentView === 'enhanced' ? enhancedText : rawText;
+  if (!text.trim()) { showToast('⚠️','Nothing to export yet.'); return; }
+  document.getElementById('export-menu').classList.remove('open');
+  const base = 'voicescript-transcript-' + new Date().toISOString().slice(0,10);
+  try {
+    if (fmt === 'txt') downloadBlob(new Blob([text], {type:'text/plain'}), base + '.txt');
+    else if (fmt === 'doc') exportDoc(text, base + '.doc');
+    else if (fmt === 'pdf') await exportPdf(text, base + '.pdf');
+    showToast('⬇','Downloaded ' + fmt.toUpperCase() + '!');
+  } catch (err) {
+    console.error('Export error:', err);
+    showToast('❌','Export failed: ' + err.message);
+  }
+}
+
+function exportDoc(text, filename) {
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const meta = transcriptMeta(text);
+  const body = text.split(/\n{2,}/)
+    .map(p => '<p>' + esc(p).replace(/\n/g,'<br>') + '</p>')
+    .join('\n');
+  const html =
+    '<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">' +
+    '<head><meta charset="utf-8"><title>VoiceScript Transcript</title>' +
+    '<style>body{font-family:Calibri,Arial,sans-serif;font-size:11pt;line-height:1.5;}h1{font-size:16pt;margin-bottom:4pt;}.meta{color:#777;font-size:9pt;margin-top:0;}p{margin:0 0 10pt;}</style>' +
+    '</head><body>' +
+    '<h1>VoiceScript Transcript</h1>' +
+    '<p class="meta">' + meta.date + ' &middot; ' + meta.words + ' words</p><hr>' +
+    body +
+    '</body></html>';
+  // UTF-8 BOM so Word detects the encoding correctly
+  downloadBlob(new Blob(['\ufeff', html], {type:'application/msword'}), filename);
+}
+
+async function exportPdf(text, filename) {
+  if (!window.jspdf) {
+    await new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js';
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('could not load PDF library (check your connection)'));
+      document.head.appendChild(s);
+    });
+  }
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit:'pt', format:'a4' });
+  const pageW = doc.internal.pageSize.getWidth();
+  const pageH = doc.internal.pageSize.getHeight();
+  const margin = 56, maxW = pageW - margin * 2, lineH = 16;
+  const meta = transcriptMeta(text);
+  let y = margin;
+
+  doc.setFont('helvetica','bold'); doc.setFontSize(18); doc.setTextColor(20);
+  doc.text('VoiceScript Transcript', margin, y); y += 20;
+  doc.setFont('helvetica','normal'); doc.setFontSize(10); doc.setTextColor(130);
+  doc.text(meta.date + '  ·  ' + meta.words + ' words', margin, y); y += 12;
+  doc.setDrawColor(200); doc.line(margin, y, pageW - margin, y); y += 22;
+
+  doc.setFontSize(11); doc.setTextColor(30);
+  for (const para of text.split(/\n+/).filter(p => p.trim())) {
+    for (const line of doc.splitTextToSize(para, maxW)) {
+      if (y > pageH - margin) { doc.addPage(); y = margin; }
+      doc.text(line, margin, y);
+      y += lineH;
+    }
+    y += 8;
+  }
+
+  const pages = doc.getNumberOfPages();
+  for (let i = 1; i <= pages; i++) {
+    doc.setPage(i);
+    doc.setFontSize(9); doc.setTextColor(150);
+    doc.text('Page ' + i + ' of ' + pages, pageW / 2, pageH - 24, { align:'center' });
+  }
+  doc.save(filename);
 }
 
 function clearAll() {
