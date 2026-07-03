@@ -580,7 +580,7 @@ async function transcribeRecording() {
   } catch (err) {
     console.error('Whisper recording error:', err);
     setStatus('','Ready to record');
-    showToast('❌','Transcription failed: ' + err.message);
+    showToast('❌','Transcription failed: ' + friendlyError(err));
   }
 }
 
@@ -629,6 +629,43 @@ const WHISPER_MODELS = {
   turbo: 'onnx-community/whisper-large-v3-turbo'
 };
 
+// The AI engine is fetched from a CDN; some networks block one CDN but not
+// another, so try each in order and remember the one that works.
+let transformersModule = null;
+async function loadTransformers() {
+  if (transformersModule) return transformersModule;
+  const sources = [
+    'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3',
+    'https://unpkg.com/@huggingface/transformers@3/dist/transformers.min.js'
+  ];
+  let lastErr = null;
+  for (const url of sources) {
+    try {
+      const mod = await import(url);
+      const wasmCfg = mod.env && mod.env.backends && mod.env.backends.onnx && mod.env.backends.onnx.wasm;
+      if (wasmCfg && typeof wasmCfg.wasmPaths === 'string' && url.includes('unpkg.com')) {
+        // Runtime binaries default to jsdelivr — repoint them at the CDN that worked
+        wasmCfg.wasmPaths = wasmCfg.wasmPaths.replace('https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/');
+      }
+      transformersModule = mod;
+      return mod;
+    } catch (err) {
+      console.warn('CDN failed, trying next:', url, err);
+      lastErr = err;
+    }
+  }
+  throw new Error('Could not download the AI engine. Your network appears to block cdn.jsdelivr.net and unpkg.com — try a different network (e.g. personal hotspot) or ask IT to allow those domains.' + (lastErr ? ' (' + lastErr.message + ')' : ''));
+}
+
+// Turn low-level fetch failures into messages a person can act on
+function friendlyError(err) {
+  const msg = (err && err.message) || String(err);
+  if (/huggingface|Failed to fetch|fetch dynamically|NetworkError|ERR_/i.test(msg) && !/network appears to block/.test(msg)) {
+    return 'Could not download the AI model — your network may be blocking huggingface.co or the CDN. Try a different network, then retry. (' + msg + ')';
+  }
+  return msg;
+}
+
 async function getWhisperDevice() {
   if (whisperDevice) return whisperDevice;
   try {
@@ -648,7 +685,7 @@ async function warnIfSlowModel() {
 
 async function loadWhisperModel(quality, onProgress) {
   if (whisperPipelines[quality]) return whisperPipelines[quality];
-  const { pipeline } = await import('https://cdn.jsdelivr.net/npm/@huggingface/transformers@3');
+  const { pipeline } = await loadTransformers();
   const device = await getWhisperDevice();
   const opts = device === 'webgpu'
     ? { dtype: { encoder_model: 'fp16', decoder_model_merged: 'q4' }, device: 'webgpu' }
@@ -905,7 +942,7 @@ async function transcribeFile() {
     finishFileTranscription();
   } catch(err) {
     console.error('Transcription error:', err);
-    showToast('❌', 'Transcription failed: ' + err.message);
+    showToast('❌', 'Transcription failed: ' + friendlyError(err));
     fileTranscribing = false;
     document.getElementById('upload-transcribe-btn').disabled = false;
     document.getElementById('stop-file-btn').style.display = 'none';
@@ -1162,12 +1199,15 @@ function clearAll() {
   currentView = 'raw';
 }
 
+let toastTimeout = null;
 function showToast(icon, msg) {
   document.getElementById('toast-icon').textContent = icon;
   document.getElementById('toast-msg').textContent = msg;
   const t = document.getElementById('toast');
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 3500);
+  clearTimeout(toastTimeout);
+  // Give longer messages time to be read (~60ms per character, 3.5s–12s)
+  toastTimeout = setTimeout(() => t.classList.remove('show'), Math.min(12000, Math.max(3500, msg.length * 60)));
 }
 
 // ── Drag & Drop ────────────────────────────────────────────────────
